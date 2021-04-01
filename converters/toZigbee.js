@@ -2848,6 +2848,108 @@ const converters = {
             }
         },
     },
+    tuya_state: {
+        key: ['state'],
+        convertSet: async (entity, key, value, meta) => {
+            const transactionId = meta.tuyaTransactionIdConst ? 1 : undefined;
+            const dataPoint = tuya.dataPoints.standardFn.lightSource.switchLed;
+            const dataValue = value.toLowerCase() === 'on';
+            await tuya.sendDataPointBool(entity, dataPoint, dataValue, 'setData', transactionId);
+        },
+    },
+    tuya_timer: {
+        key: ['timer'],
+        convertSet: async (entity, key, value, meta) => {
+            const transactionId = meta.tuyaTransactionIdConst ? 1 : undefined;
+            const dataPoint = tuya.dataPoints.standardFn.lightSource.countdown;
+            const dataValue = utils.numberWithinRange(value, 0, 86400);
+            await tuya.sendDataPointValue(entity, dataPoint, dataValue, 'setData', transactionId);
+        },
+    },
+    tuya_brightness: {
+        key: ['brightness'],
+        convertSet: async (entity, key, value, meta) => {
+            const transactionId = meta.tuyaTransactionIdConst ? 1 : undefined;
+            const dataPoint = tuya.dataPoints.standardFn.lightSource.brightValue;
+            const dataValue = utils.mapNumberRange(value, 0, 255, 10, 1000);
+            await tuya.sendDataPointValue(entity, dataPoint, dataValue, 'setData', transactionId);
+        },
+    },
+    tuya_color_temp: {
+        key: ['color_temp'],
+        convertSet: async (entity, key, value, meta) => {
+            const transactionId = meta.tuyaTransactionIdConst ? 1 : undefined;
+            // const [colorTempMin, colorTempMax] = light.findColorTempRange(entity, meta.logger); // FIXME
+            const [colorTempMin, colorTempMax] = [250, 454];
+            const preset = {
+                'warmest': colorTempMax,
+                'warm': 454,
+                'neutral': 370,
+                'cool': 250,
+                'coolest': colorTempMin,
+            };
+            if (typeof value === 'string' && isNaN(value)) {
+                const presetName = value.toLowerCase();
+                if (presetName in preset) {
+                    value = preset[presetName];
+                } else {
+                    throw new Error(`Unknown preset '${value}'`);
+                }
+            } else {
+                value = light.clampColorTemp(Number(value), colorTempMin, colorTempMax, meta.logger);
+            }
+            const dataPoint = tuya.dataPoints.standardFn.lightSource.tempValue;
+            const dataValue = utils.mapNumberRange(value, colorTempMax, colorTempMin, 0, 1000);
+            await tuya.sendDataPointValue(entity, dataPoint, dataValue, 'setData', transactionId);
+            // Operation mode is usually not reported back so we set it after request hoping it worked.
+            return {state: {color_mode: 'color_temp'}};
+        },
+    },
+    tuya_color: {
+        key: ['color'],
+        convertSet: async (entity, key, value, meta) => {
+            // Some devices require transactionId to be identical between requests.
+            const transactionId = meta.tuyaTransactionIdConst ? 1 : undefined;
+
+            // Operation mode is usually not reported back so we set it after request hoping it worked.
+            // Tuya supports only "hs" and "color_temp" color_mode's.
+            const newState = {color_mode: 'hs'};
+
+            const requestedColor = libColor.Color.fromConverterArg(value);
+            let hsvCorrected;
+
+            if (requestedColor.isHSV()) {
+                const hsv = requestedColor.hsv;
+                if (hsv.hue === null && hsv.saturation === null) {
+                    // Possibly some Tuya "light source" devices would support setting partial HSV (h, h+s or h+s+v).
+                    // Currently this was only tested with Skydance 5-in-1 LED Controller and it behaves strangely when provided with
+                    // partial HSV data.
+                    throw new Error('Both hue and saturation must be provided');
+                }
+                if (hsv.value === null) {
+                    // Device seem to have independent brightness values for white and color modes.
+                    // If V component is not defined, copy its value from `brightness` so it could be controled by Home Assistant.
+                    hsv.value = (meta.state.brightness !== undefined) ?
+                        utils.mapNumberRange(meta.state.brightness, 0, 255, 0, 100) : 100;
+                }
+
+                hsvCorrected = hsv.colorCorrected(meta).rounded(0);
+                newState.color = hsv.toObject(true);
+            } else if (requestedColor.isRGB()) {
+                const rgb = requestedColor.rgb;
+                hsvCorrected = rgb.toHSV().colorCorrected();
+                newState.color = hsvCorrected.rounded(0).toObject(true);
+            } else /* if (requestedColor.isXY()) */ {
+                throw new Error('Tuya light source does not support XY color mode');
+            }
+
+            const dataPoint = tuya.dataPoints.standardFn.lightSource.colourData;
+            const dataValue = tuya.encodeLightColor(hsvCorrected);
+            await tuya.sendDataPointString(entity, dataPoint, dataValue, 'setData', transactionId);
+            // Update state optimistically. Value reported by device would differ from requested because of color correction.
+            return {state: newState};
+        },
+    },
     tuya_dimmer_state: {
         key: ['state'],
         convertSet: async (entity, key, value, meta) => {
