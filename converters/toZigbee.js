@@ -5206,6 +5206,9 @@ const converters = {
                 }
                 await tuya.sendDataPointBitmap(entity, dp, data);
                 break;
+            case 'string':
+                tuya.sendDataPointString(entity, dp, args[2]);
+                break;
             }
         },
     },
